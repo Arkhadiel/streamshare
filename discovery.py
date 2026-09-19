@@ -294,7 +294,8 @@ class InternetHostSession:
     Gerencia o lado Host para conexões pela internet:
     1. Usa STUN para obter IP público e porta mapeada pelo NAT.
     2. Registra a sessão no servidor de sinalização com heartbeat periódico.
-    3. Escuta UDP na porta de vídeo para receber o Connect Request do Viewer.
+    3. Executa UDP hole-punch com o Viewer via servidor de rendezvous.
+    4. Escuta UDP na porta de vídeo para receber o Connect Request do Viewer.
     """
 
     def __init__(
@@ -377,9 +378,12 @@ class InternetHostSession:
 
     def _listen_loop(self):
         """
-        Escuta Connect Requests vindos pela internet na porta de vídeo.
-        Reutiliza o mesmo formato SSCR do modo LAN.
+        Escuta pacotes UDP na porta de vídeo:
+        - Pacotes SSPUNCH1: responde com o mesmo para confirmar hole-punch bidirecional.
+        - Connect Requests (SSCR): processa conexão do Viewer.
         """
+        from hole_punch import PUNCH_MAGIC
+
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -400,6 +404,14 @@ class InternetHostSession:
                 continue
             except OSError:
                 break
+
+            # Responde a pacotes de hole-punch para confirmar bidirecionalidade
+            if data == PUNCH_MAGIC:
+                try:
+                    sock.sendto(PUNCH_MAGIC, addr)
+                except OSError:
+                    pass
+                continue
 
             info = unpack_connect_request(data)
             if not info:
@@ -455,7 +467,25 @@ def scan_for_session_internet(
     if stop_event and stop_event.is_set():
         raise InterruptedError("Busca cancelada.")
 
-    # Envia Connect Request UDP ao Host pelo IP público
+    # Tenta hole-punch; se falhar, tenta conexao direta (funciona para NAT full-cone)
+    try:
+        from hole_punch import punch_as_viewer, HolePunchFailed
+        punch_kwargs = dict(
+            session_code=target_code,
+            local_video_port=viewer_video_port,
+        )
+        if signal_url:
+            punch_kwargs["signal_url"] = signal_url
+        punched_host_ip, punched_host_port = punch_as_viewer(**punch_kwargs)
+        print(f"[internet] hole-punch bem-sucedido: {punched_host_ip}:{punched_host_port}")
+        # Usa o endpoint confirmado pelo punch (pode diferir do video_port reportado via signaling
+        # em NATs que mapeiam portas diferentes)
+        host_ip = punched_host_ip
+        video_port = punched_host_port
+    except Exception as punch_err:
+        print(f"[internet] hole-punch falhou ({punch_err}), tentando conexao direta...", file=sys.stderr)
+
+    # Envia Connect Request UDP ao Host
     connect_pkt = pack_connect_request(normalize_code(target_code), viewer_name, viewer_video_port)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
