@@ -48,6 +48,10 @@ _lock = threading.Lock()
 _punch: dict[str, dict[str, Any]] = {}
 _punch_lock = threading.Lock()
 
+# SDP Exchange (WebRTC Offer/Answer): {key: {"host_offer": ..., "viewer_answer": ...}}
+_sdp: dict[str, dict[str, str]] = {}
+_sdp_lock = threading.Lock()
+
 
 def _normalize(code: str) -> str:
     return code.upper().replace(" ", "").replace("-", "")
@@ -229,6 +233,33 @@ def punch_register_viewer(code: str, body: PunchRegister):
     raise HTTPException(status_code=408, detail="Host não encontrado dentro do tempo limite.")
 
 
+@app.post("/sdp/{code}/{role}")
+def post_sdp(code: str, role: str, sdp: dict[str, str]):
+    """Host/Viewer registra SDP offer/answer."""
+    key = _normalize(code)
+    if role not in ("host", "viewer"):
+        raise HTTPException(status_code=400, detail="Role deve ser 'host' ou 'viewer'.")
+
+    with _sdp_lock:
+        if key not in _sdp:
+            _sdp[key] = {}
+        _sdp[key][role] = sdp["sdp"]
+    return {"ok": True}
+
+
+@app.get("/sdp/{code}/{role}")
+def get_sdp(code: str, role: str):
+    """Viewer/Host busca SDP do par."""
+    key = _normalize(code)
+    # Role inversa: se buscar 'viewer', quer o SDP do 'host' (ou vice-versa)
+    target_role = "viewer" if role == "host" else "host"
+
+    with _sdp_lock:
+        if key not in _sdp or target_role not in _sdp[key]:
+            raise HTTPException(status_code=404, detail="SDP ainda não disponível.")
+        return {"sdp": _sdp[key][target_role]}
+
+
 @app.delete("/punch/{code}")
 def punch_cleanup(code: str):
     """Remove entrada de punch após negociação concluída."""
@@ -236,3 +267,35 @@ def punch_cleanup(code: str):
     with _punch_lock:
         _punch.pop(key, None)
     return {"ok": True}
+
+
+@app.post("/sdp/{code}/{type}")
+def post_sdp(code: str, type: str, sdp: dict):
+    """Host ou Viewer posta SDP (Offer/Answer)."""
+    key = _normalize(code)
+    with _sdp_lock:
+        if key not in _sdp:
+            _sdp[key] = {}
+        _sdp[key][f"{type}_sdp"] = sdp["sdp"]
+        _sdp[key][f"{type}_type"] = sdp["type"]
+    return {"ok": True}
+
+
+@app.get("/sdp/{code}/{type}")
+def get_sdp(code: str, type: str):
+    """Retorna SDP (Offer/Answer) postado pelo outro lado."""
+    key = _normalize(code)
+    # type: "offer" (Viewer quer) ou "answer" (Host quer)
+    target = "host" if type == "answer" else "viewer" # Lógica inversa
+    # Simplificação: Esperar post ser realizado
+    start = time.time()
+    while time.time() - start < 15: # Timeout de long-poll
+        with _sdp_lock:
+            data = _sdp.get(key, {})
+            # Se type for 'answer' (viewer postou), host busca 'viewer_sdp'
+            sdp = data.get(f"{target}_sdp")
+            s_type = data.get(f"{target}_type")
+            if sdp and s_type:
+                return {"sdp": sdp, "type": s_type}
+        time.sleep(0.5)
+    raise HTTPException(status_code=408, detail="Timeout aguardando SDP.")

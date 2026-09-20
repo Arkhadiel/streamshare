@@ -92,6 +92,33 @@ def unregister_session(
         pass  # melhor esforço — não bloqueia o encerramento
 
 
+def post_sdp(session_code: str, sdp_type: str, sdp: str, signal_url: str = DEFAULT_SIGNAL_URL) -> None:
+    """Registra SDP (Offer/Answer) no servidor."""
+    url = f"{signal_url.rstrip('/')}/sdp/{session_code}/{sdp_type}"
+    payload = {"sdp": sdp, "type": sdp_type}
+    try:
+        resp = requests.post(url, json=payload, timeout=_REQUEST_TIMEOUT)
+        if resp.status_code != 200:
+            raise SignalingError(f"Falha ao postar SDP ({resp.status_code}): {resp.text[:200]}")
+    except requests.RequestException as e:
+        raise SignalingError(f"Falha na rede ao postar SDP: {e}") from e
+
+
+def get_sdp(session_code: str, sdp_type: str, signal_url: str = DEFAULT_SIGNAL_URL) -> tuple[str, str]:
+    """Aguarda e busca SDP do par (Offer/Answer)."""
+    url = f"{signal_url.rstrip('/')}/sdp/{session_code}/{sdp_type}"
+    try:
+        resp = requests.get(url, timeout=20.0) # Long-poll do servidor
+        if resp.status_code == 408:
+            raise SignalingError("Timeout esperando SDP.")
+        if resp.status_code != 200:
+            raise SignalingError(f"Falha ao buscar SDP ({resp.status_code}): {resp.text[:200]}")
+        data = resp.json()
+        return data["sdp"], data["type"]
+    except requests.RequestException as e:
+        raise SignalingError(f"Falha na rede ao buscar SDP: {e}") from e
+
+
 class SignalingHeartbeat:
     """
     Thread de heartbeat: reenvia o registro periodicamente para manter a sessão
