@@ -3,3 +3,4 @@ opencv-python>=4.9.0
 numpy>=1.26.0
 PySide6>=6.5.0
 requests>=2.32.0
+aiortc>=1.15.0
