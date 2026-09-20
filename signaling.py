@@ -18,7 +18,7 @@ import requests
 # URL do servidor de sinalização. Sobrescreva com STREAMSHARE_SIGNAL_URL no ambiente.
 DEFAULT_SIGNAL_URL = os.environ.get(
     "STREAMSHARE_SIGNAL_URL",
-    "https://streamshare-signal.onrender.com",
+    "https://streamshare-zj00.onrender.com",
 )
 
 _REQUEST_TIMEOUT = 8.0   # segundos por requisição HTTP
